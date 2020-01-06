@@ -1,5 +1,4 @@
 use std::time::Duration;
-use std::borrow::Cow;
 use serde_json::json;
 use xml::reader::{ EventReader, XmlEvent };
 
@@ -41,7 +40,7 @@ fn main() {
     let settings = settings::Settings::new();
     let interval = Duration::from_secs(settings.interval_sec);
     let client = reqwest::Client::new();
-    let db = sled::Db::open("cache.db").unwrap();
+    let db = sled::open("cache.db").unwrap();
 
     let slack = slack_api::requests::default_client().unwrap();
     let posting_channel = slack_api::channels::list(&slack, &settings.bot_token, &Default::default())
@@ -104,32 +103,78 @@ fn main() {
                         },
                         "title" => entry.title = content.clone(),
                         "published" => entry.published = chrono::DateTime::parse_from_rfc3339(&content).unwrap().with_timezone(&chrono::Utc),
-                        "author" => entry.author = content.clone(),
+                        "author" => {
+                            let mut names = content.split_whitespace();
+                            entry.author = format!("{} {}", names.next().unwrap_or_default(), names.last().unwrap_or_default());
+                        },
                         "content" => {
-                            let content = content.replace("<br>", "<br />");
-                            let tag_stripper = EventReader::new(content.as_bytes());
-                            let mut content: Vec<Cow<str>> = Vec::new();
-                            for event in tag_stripper {
-                                match event {
-                                    Ok(XmlEvent::Characters(chars)) => {
-                                        content.push(Cow::Owned(chars));
-                                    }
-                                    Ok(XmlEvent::EndElement { name }) => {
-                                        let suffix = match name.local_name.as_ref() {
-                                            "p" => "\n\n",
-                                            _ => ""
-                                        };
-                                        if suffix.len() > 0 {
-                                            content.push(Cow::Borrowed(suffix));
+                            let mut rendered_text = String::new();
+                            let html = scraper::Html::parse_fragment(&content);
+                            let mut link_url: Option<&str> = None;
+                            let mut skip_text = false;
+                            for edge in html.root_element().traverse() {
+                                match edge {
+                                    ego_tree::iter::Edge::Open(element) => {
+                                        match element.value() {
+                                            scraper::Node::Element(element) => {
+                                                rendered_text.push_str(match element.name() {
+                                                    "strong" | "b" => "*",
+                                                    "i" | "em" => "_",
+                                                    "br" => "\n",
+                                                    "a" if element.attr("href").is_some() => {
+                                                        link_url = Some(element.attr("href").unwrap());
+                                                        "<"
+                                                    },
+                                                    "table" => {
+                                                        skip_text = true;
+                                                        "*_See table on Canvas_*"
+                                                    },
+                                                    _ => "",
+                                                });
+                                            },
+                                            scraper::Node::Text(text) => {
+                                                if !skip_text {
+                                                    let text = text.text.to_string();
+                                                    if let Some(url) = link_url {
+                                                        if url.starts_with("/") {
+                                                            rendered_text.push_str("https://gatech.instructure.com")
+                                                        }
+                                                        rendered_text.push_str(url);
+                                                        if url != &text {
+                                                            rendered_text.push_str("|");
+                                                            rendered_text.push_str(&text);
+                                                        }
+                                                        link_url = None;
+                                                    }
+                                                    else {
+                                                        rendered_text.push_str(&text);
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
                                         }
                                     }
-                                    Err(e) => {
-                                        println!("Error: {}", e);
+                                    ego_tree::iter::Edge::Close(element) => {
+                                        match element.value() {
+                                            scraper::Node::Element(element) => {
+                                                rendered_text.push_str(match element.name() {
+                                                    "strong" | "b" => "*",
+                                                    "i" | "em" => "_",
+                                                    "p" => "\n",
+                                                    "a" => ">",
+                                                    "table" => {
+                                                        skip_text = false;
+                                                        ""
+                                                    },
+                                                    _ => "",
+                                                });
+                                            },
+                                            _ => {}
+                                        }
                                     }
-                                    _ => {}
                                 }
                             }
-                            entry.content = content.join("").replace("<", "&lt;").replace(">", "&gt;").replace("&", "&amp;");
+                            entry.content = rendered_text;
                         },
                         "id" => entry.id = content.clone(),
                         _ => {}
