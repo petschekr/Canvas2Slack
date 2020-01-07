@@ -112,11 +112,16 @@ fn main() {
                             let html = scraper::Html::parse_fragment(&content);
                             let mut link_url: Option<&str> = None;
                             let mut skip_text = false;
+                            let mut add_space: usize = 0;
                             for edge in html.root_element().traverse() {
                                 match edge {
                                     ego_tree::iter::Edge::Open(element) => {
                                         match element.value() {
                                             scraper::Node::Element(element) => {
+                                                for _ in 0..add_space {
+                                                    rendered_text.push(' ');
+                                                }
+                                                add_space = 0;
                                                 rendered_text.push_str(match element.name() {
                                                     "strong" | "b" => "*",
                                                     "i" | "em" => "_",
@@ -135,6 +140,8 @@ fn main() {
                                             scraper::Node::Text(text) => {
                                                 if !skip_text {
                                                     let text = text.text.to_string();
+                                                    let trimmed_text = text.trim_end_matches(' ');
+                                                    add_space = text.len() - trimmed_text.len();
                                                     if let Some(url) = link_url {
                                                         if url.starts_with("/") {
                                                             rendered_text.push_str("https://gatech.instructure.com")
@@ -142,12 +149,12 @@ fn main() {
                                                         rendered_text.push_str(url);
                                                         if url != &text {
                                                             rendered_text.push_str("|");
-                                                            rendered_text.push_str(&text);
+                                                            rendered_text.push_str(trimmed_text);
                                                         }
                                                         link_url = None;
                                                     }
                                                     else {
-                                                        rendered_text.push_str(&text);
+                                                        rendered_text.push_str(trimmed_text);
                                                     }
                                                 }
                                             }
@@ -168,6 +175,10 @@ fn main() {
                                                     },
                                                     _ => "",
                                                 });
+                                                for _ in 0..add_space {
+                                                    rendered_text.push(' ');
+                                                }
+                                                add_space = 0;
                                             },
                                             _ => {}
                                         }
